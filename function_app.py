@@ -6,182 +6,247 @@ import time
 import secrets
 from typing import Dict, Any, Optional
 from azure.data.tables import TableClient, UpdateMode
-from azure.core.exceptions import ResourceNotFoundError, AzureError
+from azure.core import MatchConditions
+from azure.core.exceptions import ResourceNotFoundError, AzureError, ResourceModifiedError
 from azure.identity import DefaultAzureCredential
-from requests.exceptions import RequestException
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ------------------------
-# Logging & Setup
+# Logging & Configuration
 # ------------------------
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-# GLOBAL SESSION (Performance Upgrade)
-# Reuses the TCP connection to Monzo across executions
-http_session = requests.Session()
-
-# ------------------------
-# Configuration (Remote Controllable)
-# ------------------------
+# Constants
 MONZO_API = "https://api.monzo.com"
 TABLE_NAME = "monzotokens"
+PARTITION_KEY = "monzo"
+ROW_KEY = "bot"
 
-# Defaults are set here, but can be overridden in Azure App Settings
-# Example: Add 'LIMIT_WARNING' = '30000' in Azure to change limit to £300
-BALANCE_LIMIT_WARNING = int(os.environ.get("LIMIT_WARNING", 25000))   # Default: £250.00
-BALANCE_LIMIT_CRITICAL = int(os.environ.get("LIMIT_CRITICAL", 10000)) # Default: £100.00
-ALERT_EVERY_N_TRANSACTIONS = int(os.environ.get("ALERT_FREQUENCY", 10)) # Default: Every 10th tx
+# Configurable Limits
+BALANCE_LIMIT_WARNING = int(os.environ.get("LIMIT_WARNING", 25000))   # £250.00
+BALANCE_LIMIT_CRITICAL = int(os.environ.get("LIMIT_CRITICAL", 10000)) # £100.00
+ALERT_EVERY_N_TRANSACTIONS = int(os.environ.get("ALERT_FREQUENCY", 10))
 
-REQUEST_TIMEOUT = 10
+REQUEST_TIMEOUT = (3.05, 10) # (Connect, Read)
 TOKEN_CACHE_TTL = 3000  # 50 mins
-DEFAULT_STORAGE_ACCOUNT = os.environ.get("STORAGE_ACCOUNT_NAME", "monzowatchdogjs2")
-
-_token_cache: Dict[str, tuple[str, float]] = {}
 
 # ------------------------
-# Storage client
+# 1. Robust HTTP Session
 # ------------------------
+def _build_session() -> requests.Session:
+    """Creates a session with retries and connection pooling."""
+    s = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=1, # Sleep 1s, 2s, 4s
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST", "PATCH", "PUT"]
+    )
+    adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
+    s.mount("https://", adapter)
+    return s
+
+http_session = _build_session()
+
+# ------------------------
+# 2. Efficient Storage Client
+# ------------------------
+_table_client_instance: Optional[TableClient] = None
+
 def get_table_client() -> TableClient:
+    """Lazy-loads and caches the Table Client."""
+    global _table_client_instance
+    if _table_client_instance:
+        return _table_client_instance
+
     table_endpoint = os.environ.get("AzureWebJobsStorage__tableServiceUri")
+    
+    # Support both Connection String (Local) and Managed Identity (Cloud)
     if not table_endpoint:
-        table_endpoint = f"https://{DEFAULT_STORAGE_ACCOUNT}.table.core.windows.net"
-    credential = DefaultAzureCredential()
-    return TableClient(endpoint=table_endpoint, credential=credential, table_name=TABLE_NAME)
+        # Fallback for standard connection string
+        conn_str = os.environ.get("AzureWebJobsStorage")
+        if conn_str:
+            from azure.data.tables import TableServiceClient
+            service = TableServiceClient.from_connection_string(conn_str)
+            _table_client_instance = service.get_table_client(TABLE_NAME)
+    else:
+        # Managed Identity path
+        credential = DefaultAzureCredential()
+        _table_client_instance = TableClient(endpoint=table_endpoint, credential=credential, table_name=TABLE_NAME)
+
+    # Ensure table exists (done once per cold start)
+    try:
+        if _table_client_instance:
+            _table_client_instance.create_table()
+    except AzureError:
+        pass
+
+    return _table_client_instance
 
 # ------------------------
-# OAuth Logic
+# 3. Idempotency Cache
+# ------------------------
+# Prevents double-alerting if Monzo sends the same webhook twice.
+_seen_transactions: Dict[str, float] = {}
+_SEEN_TTL = 600  # 10 minutes
+
+def is_duplicate_transaction(tx_id: str) -> bool:
+    now = time.time()
+    # Cleanup old entries
+    for k in list(_seen_transactions.keys()):
+        if now - _seen_transactions[k] > _SEEN_TTL:
+            del _seen_transactions[k]
+            
+    if tx_id in _seen_transactions:
+        return True
+    
+    _seen_transactions[tx_id] = now
+    return False
+
+# ------------------------
+# 4. OAuth Logic with ETag Safety
 # ------------------------
 def get_monzo_access_token() -> str:
-    # 1. Check Memory Cache
-    cache_key = "monzo_access_token"
-    cached = _token_cache.get(cache_key)
-    if cached:
-        token, ts = cached
-        if time.time() - ts < TOKEN_CACHE_TTL:
-            return token
-
     client_id = os.environ.get("MONZOCLIENTID")
     client_secret = os.environ.get("MONZOCLIENTSECRET")
+    recovery_refresh_token = os.environ.get("MONZOREFRESHTOKEN") # From KeyVault/Env
     
-    # 2. Retrieve Refresh Token (Prioritize DB)
-    kv_refresh = os.environ.get("MONZOREFRESHTOKEN")
-    table_refresh = None
-    table_client = None
+    table_client = get_table_client()
 
-    try:
-        table_client = get_table_client()
-        # Optimistic creation (ignore if exists)
+    # RETRY LOOP: Handles the race condition where two Functions try to refresh at once
+    for attempt in range(3):
         try:
-            table_client.create_table()
-        except AzureError:
-            pass
+            # A. Fetch current state from DB
+            try:
+                entity = table_client.get_entity(partition_key=PARTITION_KEY, row_key=ROW_KEY)
+            except ResourceNotFoundError:
+                entity = {"PartitionKey": PARTITION_KEY, "RowKey": ROW_KEY}
             
-        try:
-            entity = table_client.get_entity(partition_key="monzo", row_key="bot")
-            table_refresh = entity.get("refresh_token")
-        except ResourceNotFoundError:
-            pass
-    except AzureError as e:
-        logger.warning(f"DB Error (Non-fatal): {e}")
+            # B. Check if current DB token is valid
+            stored_access = entity.get("access_token")
+            stored_expiry = entity.get("expiry_ts", 0)
+            
+            if stored_access and time.time() < stored_expiry:
+                return stored_access
 
-    current_refresh_token = table_refresh or kv_refresh
-    if not current_refresh_token:
-        raise ValueError("Fatal Error: No refresh token found.")
+            # C. Determine which refresh token to use (DB preferred, Env fallback)
+            current_refresh = entity.get("refresh_token") or recovery_refresh_token
+            if not current_refresh:
+                raise ValueError("Fatal: No refresh token found in DB or Env.")
 
-    # 3. Exchange Token
-    def try_refresh(rt: str):
-        return http_session.post(
-            f"{MONZO_API}/oauth2/token",
-            data={
-                "grant_type": "refresh_token",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": rt
-            },
-            timeout=REQUEST_TIMEOUT
-        )
+            # D. Perform the Swap
+            resp = http_session.post(
+                f"{MONZO_API}/oauth2/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": current_refresh
+                },
+                timeout=REQUEST_TIMEOUT
+            )
 
-    resp = try_refresh(current_refresh_token)
+            # E. Handle "Evicted" (Token already used)
+            if resp.status_code == 400 and "evicted" in resp.text:
+                logger.warning("Token evicted. Someone else likely refreshed it. Retrying loop...")
+                time.sleep(1)
+                continue # Loop back to step A to pick up the new token
 
-    # 4. Self-Healing (Eviction Retry)
-    if resp.status_code != 200:
-        error_code = resp.json().get("code", "") if resp.text else ""
-        if "evicted" in error_code and kv_refresh and kv_refresh != current_refresh_token:
-            logger.warning("Token evicted. Retrying with KeyVault backup.")
-            resp = try_refresh(kv_refresh)
+            resp.raise_for_status()
+            tokens = resp.json()
 
-    if resp.status_code != 200:
-        logger.error(f"OAuth Refresh Failed: {resp.status_code} - {resp.text}")
-        raise ValueError(f"OAuth failed: {resp.status_code}")
-
-    tokens = resp.json()
-    access_token = tokens.get("access_token")
-    new_refresh_token = tokens.get("refresh_token")
-
-    # 5. Save New Token
-    if new_refresh_token and table_client:
-        try:
-            entity_data = {
-                "PartitionKey": "monzo", 
-                "RowKey": "bot",
-                "refresh_token": new_refresh_token
+            # F. Save with Optimistic Concurrency (ETag)
+            # If the entity changed since we read it in Step A, this will raise ResourceModifiedError
+            new_entity = {
+                "PartitionKey": PARTITION_KEY, 
+                "RowKey": ROW_KEY,
+                "access_token": tokens["access_token"],
+                "refresh_token": tokens["refresh_token"],
+                "expiry_ts": time.time() + tokens.get("expires_in", 21600) - 120 # Buffer 2 mins
             }
-            table_client.upsert_entity(entity_data, mode=UpdateMode.MERGE)
-            logger.info("Token rotated securely.")
-        except AzureError as e:
-            logger.warning(f"Failed to save token to DB: {e}")
+            
+            if "etag" in entity:
+                table_client.update_entity(
+                    new_entity, 
+                    mode=UpdateMode.REPLACE, 
+                    etag=entity.metadata["etag"],
+                    match_condition=MatchConditions.IfNotModified
+                )
+            else:
+                table_client.upsert_entity(new_entity, mode=UpdateMode.MERGE)
+                
+            return tokens["access_token"]
 
-    _token_cache[cache_key] = (access_token, time.time())
-    return access_token
+        except ResourceModifiedError:
+            logger.info("Race condition detected (ETag mismatch). Retrying read...")
+            time.sleep(random.uniform(0.1, 0.5))
+            continue
+        except Exception as e:
+            logger.error(f"OAuth Error: {e}")
+            raise
+
+    raise RuntimeError("Failed to obtain access token after max retries")
 
 # ------------------------
-# Webhook Entry Point
+# 5. Webhook Entry Point
 # ------------------------
-@app.route(route="monzo_webhook")
+@app.route(route="monzo_webhook", methods=["POST"])
 def monzo_webhook(req: func.HttpRequest) -> func.HttpResponse:
-    # 1. Config Check
-    required_vars = ["WEBHOOKSECRET", "MONZOCLIENTID", "MONZOCLIENTSECRET", "MONZOREFRESHTOKEN", "MONZOACCOUNTID"]
-    if any(not os.environ.get(v) for v in required_vars):
-        logger.error("Startup Failure: Missing Environment Variables")
-        return func.HttpResponse("Config Error", status_code=500)
-
-    # 2. Security Check (Constant Time Compare)
-    expected_secret = os.environ.get("WEBHOOKSECRET")
-    provided_secret = req.params.get("secret_key")
+    # A. Security: Header Check
+    secret_header = req.headers.get("X-Webhook-Secret")
+    env_secret = os.environ.get("WEBHOOKSECRET")
     
-    if not provided_secret or not expected_secret or not secrets.compare_digest(provided_secret, expected_secret):
-        ip = req.headers.get("x-forwarded-for", "unknown")
-        logger.warning(f"UNAUTHORIZED ATTEMPT from {ip}")
+    # Note: We fallback to query param for backward compatibility during migration
+    # Once you update Monzo settings, remove the `req.params` check.
+    secret_param = req.params.get("secret_key")
+    provided_secret = secret_header or secret_param
+
+    if not provided_secret or not env_secret or not secrets.compare_digest(provided_secret, env_secret):
+        logger.warning(f"UNAUTHORIZED WEBHOOK from {req.headers.get('x-forwarded-for')}")
         return func.HttpResponse("Unauthorized", status_code=401)
 
+    # B. Payload Check
     try:
         body = req.get_json()
     except ValueError:
         return func.HttpResponse("Invalid JSON", status_code=400)
 
+    # C. Idempotency Check
     if body.get("type") == "transaction.created":
+        tx = body.get("data", {})
+        tx_id = tx.get("id")
+        
+        if tx_id and is_duplicate_transaction(tx_id):
+            logger.info(f"Duplicate transaction ignored: {tx_id}")
+            return func.HttpResponse("Duplicate", status_code=200)
+
         try:
-            transaction_data = body.get("data", {})
-            check_and_alert(transaction_data)
+            check_and_alert(tx)
         except Exception as e:
             logger.exception(f"Logic Error: {e}")
-            # Return 200 to Monzo so they don't retry the webhook
+            # Return 200 to stop Monzo retrying on logic errors
             return func.HttpResponse("Error processed", status_code=200)
 
     return func.HttpResponse("Received", status_code=200)
 
 # ------------------------
-# Core Logic (State Machine)
+# 6. Core Logic
 # ------------------------
 def check_and_alert(transaction_data: Dict[str, Any]) -> None:
     account_id = os.environ.get("MONZOACCOUNTID")
-    access_token = get_monzo_access_token()
+    
+    # Ensure this transaction belongs to the tracked account
+    if transaction_data.get("account_id") != account_id:
+        return
 
+    access_token = get_monzo_access_token()
     headers = {"Authorization": f"Bearer {access_token}"}
     
-    # Check Balance (Main Account Only)
+    # 1. Get Balance
     try:
         resp = http_session.get(
             f"{MONZO_API}/balance",
@@ -189,85 +254,70 @@ def check_and_alert(transaction_data: Dict[str, Any]) -> None:
             params={"account_id": account_id},
             timeout=REQUEST_TIMEOUT
         )
-    except RequestException as e:
-        logger.error(f"Network error checking balance: {e}")
-        return
-
-    if resp.status_code != 200:
-        logger.error(f"Balance check failed: {resp.status_code}")
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to check balance: {e}")
         return
 
     data = resp.json()
     balance = data.get("total_balance") or data.get("balance")
 
-    # Determine State (0=OK, 1=WARN, 2=CRITICAL)
+    # 2. State Machine
     current_state_level = 0
     if balance < BALANCE_LIMIT_CRITICAL:
         current_state_level = 2
     elif balance < BALANCE_LIMIT_WARNING:
         current_state_level = 1
     
-    # State Memory Retrieval
     table_client = get_table_client()
     try:
-        entity = table_client.get_entity(partition_key="monzo", row_key="bot")
+        entity = table_client.get_entity(partition_key=PARTITION_KEY, row_key=ROW_KEY)
     except ResourceNotFoundError:
-        entity = {"PartitionKey": "monzo", "RowKey": "bot"}
-    except AzureError:
-        logger.warning("Could not read state DB. Assuming fresh start.")
-        entity = {"PartitionKey": "monzo", "RowKey": "bot"}
+        entity = {"PartitionKey": PARTITION_KEY, "RowKey": ROW_KEY}
 
     prev_state_level = entity.get("last_state_level", 0)
     alert_counter = entity.get("alert_counter", 0)
-
     should_alert = False
     
-    # Decision Engine
     if current_state_level > prev_state_level:
-        # Condition worsening (e.g. OK -> WARN) -> Alert Immediately
         should_alert = True
         alert_counter = 0 
-        logger.info(f"State escalated: Level {prev_state_level} -> {current_state_level}")
+        logger.info(f"State escalated: {prev_state_level} -> {current_state_level}")
 
     elif current_state_level == prev_state_level and current_state_level > 0:
-        # Condition persistent -> Alert every N times
         alert_counter += 1
         if alert_counter % ALERT_EVERY_N_TRANSACTIONS == 0:
             should_alert = True
-            logger.info(f"Persistent low balance (Tx #{alert_counter}). Sending reminder.")
 
     elif current_state_level < prev_state_level:
-        # Condition improved -> Reset
         alert_counter = 0
-        logger.info(f"State improved: Level {prev_state_level} -> {current_state_level}")
+        logger.info(f"State improved: {prev_state_level} -> {current_state_level}")
 
     # Save State
     try:
         entity["last_state_level"] = current_state_level
         entity["alert_counter"] = alert_counter
+        # We use merge here as we don't need strict locking for the alert counter
         table_client.upsert_entity(entity, mode=UpdateMode.MERGE)
     except AzureError:
         pass
 
-    # Send Alert if needed
+    # 3. Send Alert
     if should_alert:
         prefix = "BALANCE CRITICAL" if current_state_level == 2 else "BALANCE WARNING"
         color = "#E74C3C" if current_state_level == 2 else "#F1C40F"
         send_alert(access_token, account_id, transaction_data, balance, prefix, color)
 
 def send_alert(token, account_id, tx_data, balance, prefix, color):
-    merchant = tx_data.get("description", "Unknown")
-    # Convert pence to pounds for display
+    merchant = tx_data.get("merchant", {}).get("name") if tx_data.get("merchant") else tx_data.get("description", "Unknown")
     fmt_bal = f"£{balance / 100:.2f}"
     
-    title = f"{prefix}: Last spend at {merchant} Balance: {fmt_bal}"
+    title = f"{prefix}: Spent at {merchant} Balance: {fmt_bal}"
     body = "Tap to view transaction details"
     tx_id = tx_data.get("id")
-    
-    # Smart Link: Opens specific transaction if available, else home screen
     click_url = f"monzo://transaction/{tx_id}" if tx_id else "monzo://home"
 
-    # Feed Item (The main alert)
+    # Feed Item
     try:
         http_session.post(
             f"{MONZO_API}/feed",
@@ -284,11 +334,10 @@ def send_alert(token, account_id, tx_data, balance, prefix, color):
             },
             timeout=REQUEST_TIMEOUT
         )
-        logger.info(f"Alert sent: {prefix}")
-    except RequestException as e:
+    except Exception as e:
         logger.error(f"Failed to send feed item: {e}")
     
-    # Transaction Note (The sticky reminder)
+    # Transaction Note
     if tx_id:
         try:
             http_session.patch(
@@ -297,5 +346,5 @@ def send_alert(token, account_id, tx_data, balance, prefix, color):
                 data={"metadata[notes]": title},
                 timeout=REQUEST_TIMEOUT
             )
-        except RequestException:
+        except Exception:
             pass
