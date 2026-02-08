@@ -17,7 +17,6 @@ from urllib3.util.retry import Retry
 # ------------------------
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 # Constants
@@ -260,7 +259,8 @@ def check_and_alert(transaction_data: Dict[str, Any]) -> None:
         return
 
     data = resp.json()
-    balance = data.get("total_balance") or data.get("balance")
+    # Get actual balance from current account, not from additional accounts (pots/savings)
+    balance = data.get("balance")
 
     # 2. State Machine
     current_state_level = 0
