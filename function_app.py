@@ -237,10 +237,11 @@ def monzo_webhook(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse("Error processed", status_code=200)
 
     return func.HttpResponse("Received", status_code=200)
-
+  
 # ------------------------
 # Core logic
 # ------------------------
+main
 def check_and_alert(transaction_data: Dict[str, Any]) -> None:
     account_id = os.environ.get("MONZOACCOUNTID")
     
