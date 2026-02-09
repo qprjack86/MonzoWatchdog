@@ -4,6 +4,7 @@ import requests
 import os
 import time
 import secrets
+import random
 from typing import Dict, Any, Optional
 from azure.data.tables import TableClient, UpdateMode
 from azure.core import MatchConditions
@@ -83,6 +84,8 @@ def get_table_client() -> TableClient:
             _table_client_instance.create_table()
     except AzureError:
         pass
+    if not _table_client_instance:
+        raise RuntimeError("Table client could not be initialized. Check storage configuration.")
 
     return _table_client_instance
 
@@ -113,6 +116,9 @@ def get_monzo_access_token() -> str:
     client_id = os.environ.get("MONZOCLIENTID")
     client_secret = os.environ.get("MONZOCLIENTSECRET")
     recovery_refresh_token = os.environ.get("MONZOREFRESHTOKEN") # From KeyVault/Env
+
+    if not client_id or not client_secret:
+        raise ValueError("Missing MONZOCLIENTID or MONZOCLIENTSECRET in environment.")
     
     table_client = get_table_client()
 
@@ -167,12 +173,13 @@ def get_monzo_access_token() -> str:
                 "refresh_token": tokens["refresh_token"],
                 "expiry_ts": time.time() + tokens.get("expires_in", 21600) - 120 # Buffer 2 mins
             }
-            
-            if "etag" in entity:
+
+            etag = entity.metadata.get("etag") if hasattr(entity, "metadata") else None
+            if etag:
                 table_client.update_entity(
                     new_entity, 
                     mode=UpdateMode.REPLACE, 
-                    etag=entity.metadata["etag"],
+                    etag=etag,
                     match_condition=MatchConditions.IfNotModified
                 )
             else:
@@ -261,6 +268,9 @@ def check_and_alert(transaction_data: Dict[str, Any]) -> None:
     data = resp.json()
     # Get actual balance from current account, not from additional accounts (pots/savings)
     balance = data.get("balance")
+    if balance is None:
+        logger.error("Balance response missing balance field.")
+        return
 
     # 2. State Machine
     current_state_level = 0
