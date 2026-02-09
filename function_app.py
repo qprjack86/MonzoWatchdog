@@ -251,6 +251,15 @@ def check_and_alert(transaction_data: Dict[str, Any]) -> None:
 
     access_token = get_monzo_access_token()
     headers = {"Authorization": f"Bearer {access_token}"}
+
+    tx_id = transaction_data.get("id")
+    if tx_id:
+        if not verify_transaction(tx_id, account_id, headers):
+            logger.warning("Transaction verification failed. Skipping alert workflow.")
+            return
+    else:
+        logger.warning("Transaction payload missing id. Skipping verification and alert workflow.")
+        return
     
     # 1. Get Balance
     try:
@@ -317,6 +326,29 @@ def check_and_alert(transaction_data: Dict[str, Any]) -> None:
         prefix = "BALANCE CRITICAL" if current_state_level == 2 else "BALANCE WARNING"
         color = "#E74C3C" if current_state_level == 2 else "#F1C40F"
         send_alert(access_token, account_id, transaction_data, balance, prefix, color)
+
+def verify_transaction(tx_id: str, account_id: str, headers: Dict[str, str]) -> bool:
+    try:
+        resp = http_session.get(
+            f"{MONZO_API}/transactions/{tx_id}",
+            headers=headers,
+            timeout=REQUEST_TIMEOUT
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to verify transaction {tx_id}: {e}")
+        return False
+
+    tx = resp.json().get("transaction", {})
+    if not tx:
+        logger.error(f"Transaction verification returned empty payload for {tx_id}.")
+        return False
+
+    if tx.get("account_id") != account_id:
+        logger.warning(f"Transaction {tx_id} account mismatch during verification.")
+        return False
+
+    return True
 
 def send_alert(token, account_id, tx_data, balance, prefix, color):
     merchant = tx_data.get("merchant", {}).get("name") if tx_data.get("merchant") else tx_data.get("description", "Unknown")
