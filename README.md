@@ -9,6 +9,7 @@ Monzo Balance Bot is a serverless Azure Function that listens to Monzo transacti
 ## Why this exists
 
 Monzo already shows your balance, but it is easy to miss when spending quickly. This bot adds proactive alerts directly into your Monzo activity feed and (optionally) transaction notes so warnings appear exactly where you are looking.
+It is a feature missing from the Monzo App (and one of the most requested features - https://community.monzo.com/t/notification-on-reaching-a-set-balance/153931)
 
 ## Features
 
