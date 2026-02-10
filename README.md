@@ -1,6 +1,6 @@
-# Monzo Watchdog 🐕
+# Monzo Balance Bot 🐕
 
-Monzo Watchdog is a serverless Azure Function that listens to Monzo transaction webhooks and posts balance warnings back to your Monzo feed when your spendable balance drops below configurable thresholds.
+Monzo Balance Bot is a serverless Azure Function that listens to Monzo transaction webhooks and posts balance warnings back to your Monzo feed when your spendable balance drops below configurable thresholds.
 
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
