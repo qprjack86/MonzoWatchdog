@@ -30,7 +30,7 @@ It is a feature missing from the Monzo App (and one of the most requested featur
 - **Runtime adapters:**
   - Azure Functions (`function_app.py`)
   - FastAPI (`app_fastapi.py`)
-- **State & token store:** Azure Table Storage (`monzotokens` table)
+- **State & token store:** pluggable backend (`azure_table` default, `memory` local option)
 - **External API:** Monzo API (`/oauth2/token`, `/balance`, `/feed`, `/transactions/{id}`)
 - **Auth model:** Monzo OAuth2 refresh token + managed identity or storage connection string
 
@@ -53,6 +53,7 @@ Set these as Function App settings (or in `local.settings.json` when running loc
 | `MONZOACCOUNTID` | Yes | The Monzo account ID to monitor | `acc_000...` |
 | `MONZOREFRESHTOKEN` | Yes* | Initial fallback refresh token used when storage is empty | `eyJ...` |
 | `WEBHOOKSECRET` | Yes | Shared secret used to verify incoming webhook calls | `a1b2c3...` |
+| `STATE_BACKEND` | No | State backend: `azure_table` (default) or `memory` | `memory` |
 | `AzureWebJobsStorage` | Yes** | Storage connection string (local/dev or classic config) | `DefaultEndpointsProtocol=...` |
 | `AzureWebJobsStorage__tableServiceUri` | Optional** | Table endpoint for managed identity auth in Azure | `https://<acct>.table.core.windows.net` |
 | `LIMIT_WARNING` | No | Warning threshold in pence | `25000` |
@@ -76,7 +77,7 @@ pip install -r requirements.txt
 pip install -r requirements-fastapi.txt
 ```
 
-3. Configure environment variables listed above. For Azure local runtime, put them in `local.settings.json`.
+3. Configure environment variables listed above. For Azure local runtime, put them in `local.settings.json`. For local FastAPI development without Azure Storage, set `STATE_BACKEND=memory`.
 
 ### Run with Azure Functions
 

@@ -34,3 +34,12 @@ class AlertStateStore(Protocol):
 
     def save_alert_state(self, state: AlertState) -> None:
         ...
+
+
+class DedupeStore(Protocol):
+    def seen(self, key: str, ttl_seconds: int) -> bool:
+        ...
+
+
+class StateStore(TokenStore, AlertStateStore, DedupeStore, Protocol):
+    pass

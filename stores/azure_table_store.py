@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 from azure.core import MatchConditions
@@ -106,3 +107,26 @@ class AzureTableStore:
             "alert_counter": state.alert_counter,
         }
         table_client.upsert_entity(payload, mode=UpdateMode.MERGE)
+
+    def seen(self, key: str, ttl_seconds: int) -> bool:
+        table_client = self._get_table_client()
+        dedupe_partition = f"{self.settings.partition_key}_dedupe"
+        now = time.time()
+
+        try:
+            existing = table_client.get_entity(partition_key=dedupe_partition, row_key=key)
+            seen_at = float(existing.get("seen_at", 0) or 0)
+            if now - seen_at <= ttl_seconds:
+                return True
+        except ResourceNotFoundError:
+            pass
+
+        table_client.upsert_entity(
+            {
+                "PartitionKey": dedupe_partition,
+                "RowKey": key,
+                "seen_at": now,
+            },
+            mode=UpdateMode.MERGE,
+        )
+        return False

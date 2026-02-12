@@ -26,7 +26,6 @@ class WebhookService:
         self.settings = settings
         self.monzo_client = monzo_client
         self.store = store
-        self._seen_transactions: dict[str, float] = {}
 
     def handle_webhook(self, headers: dict[str, str], query: dict[str, str], body: dict[str, Any]) -> WebhookResult:
         secret_header = headers.get("X-Webhook-Secret") or headers.get("x-webhook-secret")
@@ -40,7 +39,7 @@ class WebhookService:
         if body.get("type") == "transaction.created":
             tx = body.get("data", {})
             tx_id = tx.get("id")
-            if tx_id and self.is_duplicate_transaction(tx_id):
+            if tx_id and self.store.seen(tx_id, self.settings.seen_ttl):
                 logger.info("Duplicate transaction ignored: %s", tx_id)
                 return WebhookResult(200, "Duplicate")
 
@@ -51,18 +50,6 @@ class WebhookService:
                 return WebhookResult(200, "Error processed")
 
         return WebhookResult(200, "Received")
-
-    def is_duplicate_transaction(self, tx_id: str) -> bool:
-        now = time.time()
-        for key in list(self._seen_transactions.keys()):
-            if now - self._seen_transactions[key] > self.settings.seen_ttl:
-                del self._seen_transactions[key]
-
-        if tx_id in self._seen_transactions:
-            return True
-
-        self._seen_transactions[tx_id] = now
-        return False
 
     def get_monzo_access_token(self) -> str:
         if not self.settings.monzo_client_id or not self.settings.monzo_client_secret:
