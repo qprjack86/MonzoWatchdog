@@ -70,11 +70,17 @@ Set these as Function App settings (or in `local.settings.json` when running loc
 2. Install dependencies for your chosen runtime:
 
 ```bash
-# Azure Functions
-pip install -r requirements.txt
+# Core only
+pip install -r requirements-core.txt
+
+# Azure Functions runtime
+pip install -r requirements-azure.txt
 
 # FastAPI runtime
 pip install -r requirements-fastapi.txt
+
+# Everything for local development
+pip install -r requirements-dev.txt
 ```
 
 3. Configure environment variables listed above. For Azure local runtime, put them in `local.settings.json`. For local FastAPI development without Azure Storage, set `STATE_BACKEND=memory`.
@@ -129,6 +135,16 @@ Webhook URL:
 - `https://<YOUR_HOST>/monzo_webhook`
 
 This container target can be deployed to Cloud Run, ECS/Fargate, Azure Container Apps, Fly.io, or Kubernetes.
+
+
+## CI
+
+GitHub Actions runs a 3-job matrix:
+- **core-tests** (core modules + webhook service unit tests)
+- **azure-adapter-tests** (Azure adapter compile + import checks)
+- **fastapi-adapter-tests** (FastAPI adapter compile + route checks)
+
+Workflow file: `.github/workflows/ci.yml`.
 
 ## Getting a refresh token (one-time helper)
 
