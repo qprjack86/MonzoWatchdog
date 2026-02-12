@@ -1,6 +1,6 @@
 # Monzo Balance Bot 🐕
 
-Monzo Balance Bot is a serverless Azure Function that listens to Monzo transaction webhooks and posts balance warnings back to your Monzo feed when your spendable balance drops below configurable thresholds.
+Monzo Balance Bot listens to Monzo transaction webhooks and posts balance warnings back to your Monzo feed when your spendable balance drops below configurable thresholds. It now supports both Azure Functions and a platform-neutral FastAPI runtime.
 
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
@@ -26,7 +26,10 @@ It is a feature missing from the Monzo App (and one of the most requested featur
 
 ## Architecture
 
-- **Runtime:** Azure Functions (Python programming model v2)
+- **Core logic:** Transport-agnostic Python service (`core/webhook_service.py`)
+- **Runtime adapters:**
+  - Azure Functions (`function_app.py`)
+  - FastAPI (`app_fastapi.py`)
 - **State & token store:** Azure Table Storage (`monzotokens` table)
 - **External API:** Monzo API (`/oauth2/token`, `/balance`, `/feed`, `/transactions/{id}`)
 - **Auth model:** Monzo OAuth2 refresh token + managed identity or storage connection string
@@ -34,10 +37,10 @@ It is a feature missing from the Monzo App (and one of the most requested featur
 ## Prerequisites
 
 - Python 3.10+
-- [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local)
-- Azure subscription + Function App
-- Azure Storage account (Table service)
+- Azure Table-capable storage configuration (`AzureWebJobsStorage` or `AzureWebJobsStorage__tableServiceUri`)
 - Monzo Developer app credentials (Client ID / Client Secret)
+- For Azure runtime: [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local)
+- For FastAPI runtime: `fastapi` + `uvicorn` (included in `requirements-fastapi.txt`)
 
 ## Configuration
 
@@ -63,23 +66,38 @@ Set these as Function App settings (or in `local.settings.json` when running loc
 ## Local development
 
 1. Create and activate a virtual environment.
-2. Install dependencies:
+2. Install dependencies for your chosen runtime:
 
 ```bash
+# Azure Functions
 pip install -r requirements.txt
+
+# FastAPI runtime
+pip install -r requirements-fastapi.txt
 ```
 
-3. Create `local.settings.json` with the settings listed above.
-4. Start Functions runtime:
+3. Configure environment variables listed above. For Azure local runtime, put them in `local.settings.json`.
+
+### Run with Azure Functions
 
 ```bash
 func start
 ```
 
-5. Test webhook endpoint locally:
+Webhook URL: `http://localhost:7071/api/monzo_webhook`
+
+### Run with FastAPI
 
 ```bash
-curl -X POST "http://localhost:7071/api/monzo_webhook?secret_key=TEST_SECRET" \
+uvicorn app_fastapi:app --reload --host 0.0.0.0 --port 8000
+```
+
+Webhook URL: `http://localhost:8000/monzo_webhook`
+
+### Test webhook endpoint locally
+
+```bash
+curl -X POST "http://localhost:8000/monzo_webhook?secret_key=TEST_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"type":"transaction.created","data":{"id":"tx_123","account_id":"acc_000"}}'
 ```
@@ -88,18 +106,28 @@ curl -X POST "http://localhost:7071/api/monzo_webhook?secret_key=TEST_SECRET" \
 
 ## Deployment
 
-Publish to Azure Functions:
+### Azure Functions
 
 ```bash
 func azure functionapp publish <YOUR_APP_NAME>
 ```
 
-After deployment:
+Webhook URL:
+- `https://<YOUR_APP_NAME>.azurewebsites.net/api/monzo_webhook`
 
-1. Confirm app settings are present in Azure.
-2. Register/update your Monzo webhook URL to point at:
-   - `https://<YOUR_APP_NAME>.azurewebsites.net/api/monzo_webhook`
-3. Ensure Monzo sends your shared secret (preferred via `X-Webhook-Secret`).
+### Container / generic platforms
+
+Build and run locally:
+
+```bash
+docker build -t monzo-balance-bot .
+docker run --rm -p 8000:8000 --env-file .env monzo-balance-bot
+```
+
+Webhook URL:
+- `https://<YOUR_HOST>/monzo_webhook`
+
+This container target can be deployed to Cloud Run, ECS/Fargate, Azure Container Apps, Fly.io, or Kubernetes.
 
 ## Getting a refresh token (one-time helper)
 
