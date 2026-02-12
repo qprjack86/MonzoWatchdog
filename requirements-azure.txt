@@ -1,0 +1,4 @@
+-r requirements-core.txt
+azure-functions
+azure-data-tables
+azure-identity
