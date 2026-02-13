@@ -34,6 +34,7 @@ class Settings:
     partition_key: str
     row_key: str
     seen_ttl: int
+    # Backwards-compatible default: Monzo usually authenticates webhooks via query-string secret.
     allow_query_secret: bool = True
 
 

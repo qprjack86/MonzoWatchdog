@@ -88,6 +88,27 @@ class WebhookServiceTests(unittest.TestCase):
         res = service.handle_webhook({}, {"secret_key": "webhook_secret"}, payload)
         self.assertEqual(res.status_code, 200)
 
+
+    def test_settings_constructor_without_allow_query_secret_defaults_true(self):
+        legacy = Settings(
+            monzo_client_id="id",
+            monzo_client_secret="secret",
+            monzo_account_id="acc_test",
+            monzo_refresh_token="seed_refresh",
+            webhook_secret="webhook_secret",
+            state_backend="memory",
+            balance_limit_warning=25000,
+            balance_limit_critical=10000,
+            alert_frequency=10,
+            request_timeout=(3.05, 10),
+            token_cache_ttl=3000,
+            table_name="monzotokens",
+            partition_key="monzo",
+            row_key="bot",
+            seen_ttl=600,
+        )
+        self.assertTrue(legacy.allow_query_secret)
+
     def test_duplicate_transaction_is_ignored(self):
         payload = {"type": "transaction.created", "data": {"id": "tx_1", "account_id": "acc_test"}}
         headers = {"x-webhook-secret": "webhook_secret"}

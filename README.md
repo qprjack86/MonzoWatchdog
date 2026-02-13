@@ -120,6 +120,8 @@ curl -X POST "http://localhost:8000/monzo_webhook?secret_key=TEST_SECRET" \
 func azure functionapp publish <YOUR_APP_NAME>
 ```
 
+> Monzo webhook compatibility: ensure `ALLOW_QUERY_SECRET=true` unless you have an upstream gateway injecting/validating `X-Webhook-Secret`.
+
 Webhook URL:
 - `https://<YOUR_APP_NAME>.azurewebsites.net/api/monzo_webhook`
 
@@ -161,7 +163,7 @@ This opens a browser, receives the callback at `http://localhost:8080/callback`,
 
 - **Token rotation:** the function refreshes access tokens automatically and persists them to Table Storage.
 - **Concurrency safety:** ETag checks handle simultaneous refresh attempts.
-- **Duplicate webhooks:** in-memory TTL dedupe prevents repeated processing in close succession.
+- **Duplicate webhooks:** dedupe is store-backed (`azure_table` or `memory`) to avoid repeated processing in close succession.
 - **Alert behavior:** alerts trigger on threshold escalation and then periodically while still below threshold.
 
 ## Security recommendations
