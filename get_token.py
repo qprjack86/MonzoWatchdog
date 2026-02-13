@@ -45,8 +45,6 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             logger.info("Authorization code received successfully")
-            # For debugging only, remove after you confirm the flow:
-            logger.info("AUTH CODE FOR DEBUGGING: %s", code)
 
             self._write(
                 200,
@@ -111,8 +109,9 @@ def exchange_token(auth_code: str) -> None:
             logger.error("No refresh_token in response: %s", data)
             return
 
-        logger.info("SUCCESS. Copy the value below into Key Vault as MONZOREFRESHTOKEN:")
-        logger.info("MONZOREFRESHTOKEN=%s", refresh_token)
+        masked = f"{refresh_token[:6]}...{refresh_token[-4:]}" if len(refresh_token) > 12 else "[redacted]"
+        logger.info("SUCCESS. Refresh token obtained. Store it securely (e.g., Key Vault).")
+        logger.info("MONZOREFRESHTOKEN=%s", masked)
 
         # Optional: one-time whoami check to validate token
         if access_token:

@@ -1,6 +1,6 @@
 # Monzo Balance Bot 🐕
 
-Monzo Balance Bot is a serverless Azure Function that listens to Monzo transaction webhooks and posts balance warnings back to your Monzo feed when your spendable balance drops below configurable thresholds.
+Monzo Balance Bot listens to Monzo transaction webhooks and posts balance warnings back to your Monzo feed when your spendable balance drops below configurable thresholds. It now supports both Azure Functions and a platform-neutral FastAPI runtime.
 
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
@@ -26,18 +26,21 @@ It is a feature missing from the Monzo App (and one of the most requested featur
 
 ## Architecture
 
-- **Runtime:** Azure Functions (Python programming model v2)
-- **State & token store:** Azure Table Storage (`monzotokens` table)
+- **Core logic:** Transport-agnostic Python service (`core/webhook_service.py`)
+- **Runtime adapters:**
+  - Azure Functions (`function_app.py`)
+  - FastAPI (`app_fastapi.py`)
+- **State & token store:** pluggable backend (`azure_table` default, `memory` local option)
 - **External API:** Monzo API (`/oauth2/token`, `/balance`, `/feed`, `/transactions/{id}`)
 - **Auth model:** Monzo OAuth2 refresh token + managed identity or storage connection string
 
 ## Prerequisites
 
 - Python 3.10+
-- [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local)
-- Azure subscription + Function App
-- Azure Storage account (Table service)
+- Azure Table-capable storage configuration (`AzureWebJobsStorage` or `AzureWebJobsStorage__tableServiceUri`)
 - Monzo Developer app credentials (Client ID / Client Secret)
+- For Azure runtime: [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local)
+- For FastAPI runtime: `fastapi` + `uvicorn` (included in `requirements-fastapi.txt`)
 
 ## Configuration
 
@@ -50,6 +53,8 @@ Set these as Function App settings (or in `local.settings.json` when running loc
 | `MONZOACCOUNTID` | Yes | The Monzo account ID to monitor | `acc_000...` |
 | `MONZOREFRESHTOKEN` | Yes* | Initial fallback refresh token used when storage is empty | `eyJ...` |
 | `WEBHOOKSECRET` | Yes | Shared secret used to verify incoming webhook calls | `a1b2c3...` |
+| `STATE_BACKEND` | No | State backend: `azure_table` (default) or `memory` | `memory` |
+| `ALLOW_QUERY_SECRET` | No | Allow Monzo query-string secret auth (`true` default for Monzo compatibility) | `true` |
 | `AzureWebJobsStorage` | Yes** | Storage connection string (local/dev or classic config) | `DefaultEndpointsProtocol=...` |
 | `AzureWebJobsStorage__tableServiceUri` | Optional** | Table endpoint for managed identity auth in Azure | `https://<acct>.table.core.windows.net` |
 | `LIMIT_WARNING` | No | Warning threshold in pence | `25000` |
@@ -63,43 +68,84 @@ Set these as Function App settings (or in `local.settings.json` when running loc
 ## Local development
 
 1. Create and activate a virtual environment.
-2. Install dependencies:
+2. Install dependencies for your chosen runtime:
 
 ```bash
-pip install -r requirements.txt
+# Core only
+pip install -r requirements-core.txt
+
+# Azure Functions runtime
+pip install -r requirements-azure.txt
+
+# FastAPI runtime
+pip install -r requirements-fastapi.txt
+
+# Everything for local development
+pip install -r requirements-dev.txt
 ```
 
-3. Create `local.settings.json` with the settings listed above.
-4. Start Functions runtime:
+3. Configure environment variables listed above. For Azure local runtime, put them in `local.settings.json`. For local FastAPI development without Azure Storage, set `STATE_BACKEND=memory`.
+
+### Run with Azure Functions
 
 ```bash
 func start
 ```
 
-5. Test webhook endpoint locally:
+Webhook URL: `http://localhost:7071/api/monzo_webhook`
+
+### Run with FastAPI
 
 ```bash
-curl -X POST "http://localhost:7071/api/monzo_webhook?secret_key=TEST_SECRET" \
+uvicorn app_fastapi:app --reload --host 0.0.0.0 --port 8000
+```
+
+Webhook URL: `http://localhost:8000/monzo_webhook`
+
+### Test webhook endpoint locally
+
+```bash
+curl -X POST "http://localhost:8000/monzo_webhook?secret_key=TEST_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"type":"transaction.created","data":{"id":"tx_123","account_id":"acc_000"}}'
 ```
 
-> Tip: once your Monzo webhook is configured to send `X-Webhook-Secret`, prefer header validation and stop relying on `secret_key` query parameter.
+> Tip: use `X-Webhook-Secret` header validation. Monzo typically authenticates via query-string secret. Keep `ALLOW_QUERY_SECRET=true` unless you have an upstream gateway that injects/validates headers.
 
 ## Deployment
 
-Publish to Azure Functions:
+### Azure Functions
 
 ```bash
 func azure functionapp publish <YOUR_APP_NAME>
 ```
 
-After deployment:
+Webhook URL:
+- `https://<YOUR_APP_NAME>.azurewebsites.net/api/monzo_webhook`
 
-1. Confirm app settings are present in Azure.
-2. Register/update your Monzo webhook URL to point at:
-   - `https://<YOUR_APP_NAME>.azurewebsites.net/api/monzo_webhook`
-3. Ensure Monzo sends your shared secret (preferred via `X-Webhook-Secret`).
+### Container / generic platforms
+
+Build and run locally:
+
+```bash
+docker build -t monzo-balance-bot .
+docker run --rm -p 8000:8000 --env-file .env monzo-balance-bot
+```
+
+Webhook URL:
+- `https://<YOUR_HOST>/monzo_webhook`
+
+This container target can be deployed to Cloud Run, ECS/Fargate, Azure Container Apps, Fly.io, or Kubernetes.
+
+
+## CI
+
+GitHub Actions runs a 3-job matrix:
+- **core-tests** (core modules + webhook service unit tests)
+- **azure-adapter-tests** (Azure adapter compile + import checks)
+- **fastapi-adapter-tests** (FastAPI adapter compile + route checks)
+
+Workflow file: `.github/workflows/ci.yml`.
 
 ## Getting a refresh token (one-time helper)
 
@@ -123,6 +169,7 @@ This opens a browser, receives the callback at `http://localhost:8080/callback`,
 - Store `MONZOCLIENTSECRET` and `MONZOREFRESHTOKEN` in Azure Key Vault (or equivalent secret store).
 - Prefer managed identity with `AzureWebJobsStorage__tableServiceUri` in production.
 - Use a long random `WEBHOOKSECRET` and rotate it periodically.
+- If you can terminate/validate webhook auth at an upstream gateway, set `ALLOW_QUERY_SECRET=false` and use header-only auth in the app layer.
 - Restrict Function App access and monitoring to trusted operators.
 
 ## Troubleshooting
