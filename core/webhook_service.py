@@ -31,6 +31,7 @@ class WebhookService:
         secret_header = headers.get("X-Webhook-Secret") or headers.get("x-webhook-secret")
         secret_query = query.get("secret_key") if self.settings.allow_query_secret else None
         provided_secret = secret_header or secret_query
+        provided_secret = secret_header or query.get("secret_key")
         env_secret = self.settings.webhook_secret
 
         if not provided_secret or not env_secret or not secrets.compare_digest(provided_secret, env_secret):
