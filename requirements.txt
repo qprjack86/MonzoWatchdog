@@ -1,4 +1,1 @@
-azure-functions
-azure-data-tables
-azure-identity
-requests
+-r requirements-azure.txt
