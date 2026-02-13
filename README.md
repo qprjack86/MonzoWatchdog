@@ -54,6 +54,7 @@ Set these as Function App settings (or in `local.settings.json` when running loc
 | `MONZOREFRESHTOKEN` | Yes* | Initial fallback refresh token used when storage is empty | `eyJ...` |
 | `WEBHOOKSECRET` | Yes | Shared secret used to verify incoming webhook calls | `a1b2c3...` |
 | `STATE_BACKEND` | No | State backend: `azure_table` (default) or `memory` | `memory` |
+| `ALLOW_QUERY_SECRET` | No | Allow Monzo query-string secret auth (`true` default for Monzo compatibility) | `true` |
 | `AzureWebJobsStorage` | Yes** | Storage connection string (local/dev or classic config) | `DefaultEndpointsProtocol=...` |
 | `AzureWebJobsStorage__tableServiceUri` | Optional** | Table endpoint for managed identity auth in Azure | `https://<acct>.table.core.windows.net` |
 | `LIMIT_WARNING` | No | Warning threshold in pence | `25000` |
@@ -109,7 +110,7 @@ curl -X POST "http://localhost:8000/monzo_webhook?secret_key=TEST_SECRET" \
   -d '{"type":"transaction.created","data":{"id":"tx_123","account_id":"acc_000"}}'
 ```
 
-> Tip: once your Monzo webhook is configured to send `X-Webhook-Secret`, prefer header validation and stop relying on `secret_key` query parameter.
+> Tip: use `X-Webhook-Secret` header validation. Monzo typically authenticates via query-string secret. Keep `ALLOW_QUERY_SECRET=true` unless you have an upstream gateway that injects/validates headers.
 
 ## Deployment
 
@@ -118,6 +119,8 @@ curl -X POST "http://localhost:8000/monzo_webhook?secret_key=TEST_SECRET" \
 ```bash
 func azure functionapp publish <YOUR_APP_NAME>
 ```
+
+> Monzo webhook compatibility: ensure `ALLOW_QUERY_SECRET=true` unless you have an upstream gateway injecting/validating `X-Webhook-Secret`.
 
 Webhook URL:
 - `https://<YOUR_APP_NAME>.azurewebsites.net/api/monzo_webhook`
@@ -160,7 +163,7 @@ This opens a browser, receives the callback at `http://localhost:8080/callback`,
 
 - **Token rotation:** the function refreshes access tokens automatically and persists them to Table Storage.
 - **Concurrency safety:** ETag checks handle simultaneous refresh attempts.
-- **Duplicate webhooks:** in-memory TTL dedupe prevents repeated processing in close succession.
+- **Duplicate webhooks:** dedupe is store-backed (`azure_table` or `memory`) to avoid repeated processing in close succession.
 - **Alert behavior:** alerts trigger on threshold escalation and then periodically while still below threshold.
 
 ## Security recommendations
@@ -168,6 +171,7 @@ This opens a browser, receives the callback at `http://localhost:8080/callback`,
 - Store `MONZOCLIENTSECRET` and `MONZOREFRESHTOKEN` in Azure Key Vault (or equivalent secret store).
 - Prefer managed identity with `AzureWebJobsStorage__tableServiceUri` in production.
 - Use a long random `WEBHOOKSECRET` and rotate it periodically.
+- If you can terminate/validate webhook auth at an upstream gateway, set `ALLOW_QUERY_SECRET=false` and use header-only auth in the app layer.
 - Restrict Function App access and monitoring to trusted operators.
 
 ## Troubleshooting

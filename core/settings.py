@@ -10,6 +10,13 @@ def _get_env(*keys: str, default=None):
     return default
 
 
+def _env_bool(*keys: str, default: bool = False) -> bool:
+    value = _get_env(*keys)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     monzo_client_id: str | None
@@ -27,6 +34,8 @@ class Settings:
     partition_key: str
     row_key: str
     seen_ttl: int
+    # Backwards-compatible default: Monzo usually authenticates webhooks via query-string secret.
+    allow_query_secret: bool = True
 
 
 def load_settings() -> Settings:
@@ -37,6 +46,7 @@ def load_settings() -> Settings:
         monzo_refresh_token=_get_env("MONZO_REFRESH_TOKEN", "MONZOREFRESHTOKEN"),
         webhook_secret=_get_env("WEBHOOK_SECRET", "WEBHOOKSECRET"),
         state_backend=str(_get_env("STATE_BACKEND", default="azure_table")),
+        allow_query_secret=_env_bool("ALLOW_QUERY_SECRET", default=True),
         balance_limit_warning=int(_get_env("BALANCE_LIMIT_WARNING", "LIMIT_WARNING", default=25000)),
         balance_limit_critical=int(_get_env("BALANCE_LIMIT_CRITICAL", "LIMIT_CRITICAL", default=10000)),
         alert_frequency=int(_get_env("ALERT_FREQUENCY", default=10)),
