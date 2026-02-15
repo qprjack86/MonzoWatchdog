@@ -23,6 +23,8 @@ It is a feature missing from the Monzo App (and one of the most requested featur
 - **Webhook secret verification** via either:
   - Header: `X-Webhook-Secret` (recommended)
   - Query parameter: `secret_key` (legacy compatibility)
+- **Health check endpoints** available at `/health` for both Azure Functions and FastAPI runtimes.
+- **Correlation IDs** supported through `X-Correlation-ID` (request/response) for easier tracing.
 
 ## Architecture
 

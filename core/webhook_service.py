@@ -4,6 +4,7 @@ import logging
 import random
 import secrets
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,7 +28,14 @@ class WebhookService:
         self.monzo_client = monzo_client
         self.store = store
 
-    def handle_webhook(self, headers: dict[str, str], query: dict[str, str], body: dict[str, Any]) -> WebhookResult:
+    def handle_webhook(
+        self,
+        headers: dict[str, str],
+        query: dict[str, str],
+        body: dict[str, Any],
+        correlation_id: str | None = None,
+    ) -> WebhookResult:
+        cid = correlation_id or str(uuid.uuid4())
         secret_header = headers.get("X-Webhook-Secret") or headers.get("x-webhook-secret")
         # Monzo commonly sends shared secret via query string; keep this toggleable for hardening.
         secret_query = query.get("secret_key") if self.settings.allow_query_secret else None
@@ -35,20 +43,20 @@ class WebhookService:
         env_secret = self.settings.webhook_secret
 
         if not provided_secret or not env_secret or not secrets.compare_digest(provided_secret, env_secret):
-            logger.warning("UNAUTHORIZED WEBHOOK")
+            logger.warning("event=webhook_unauthorized cid=%s", cid)
             return WebhookResult(401, "Unauthorized")
 
         if body.get("type") == "transaction.created":
             tx = body.get("data", {})
             tx_id = tx.get("id")
             if tx_id and self.store.seen(tx_id, self.settings.seen_ttl):
-                logger.info("Duplicate transaction ignored: %s", tx_id)
+                logger.info("event=webhook_duplicate cid=%s tx_id=%s", cid, tx_id)
                 return WebhookResult(200, "Duplicate")
 
             try:
-                self.check_and_alert(tx)
+                self.check_and_alert(tx, cid)
             except Exception as exc:
-                logger.exception("Logic Error: %s", exc)
+                logger.exception("event=webhook_logic_error cid=%s error=%s", cid, exc)
                 return WebhookResult(200, "Error processed")
 
         return WebhookResult(200, "Received")
@@ -94,31 +102,33 @@ class WebhookService:
 
         raise RuntimeError("Failed to obtain access token after max retries")
 
-    def check_and_alert(self, transaction_data: dict[str, Any]) -> None:
+    def check_and_alert(self, transaction_data: dict[str, Any], correlation_id: str | None = None) -> None:
+        cid = correlation_id or str(uuid.uuid4())
         account_id = self.settings.monzo_account_id
         if transaction_data.get("account_id") != account_id:
+            logger.info("event=webhook_irrelevant_account cid=%s", cid)
             return
 
         access_token = self.get_monzo_access_token()
         tx_id = transaction_data.get("id")
         if not tx_id:
-            logger.warning("Transaction payload missing id. Skipping verification and alert workflow.")
+            logger.warning("event=tx_missing_id cid=%s", cid)
             return
 
-        if not self.verify_transaction(tx_id, account_id or "", access_token):
-            logger.warning("Transaction verification failed. Skipping alert workflow.")
+        if not self.verify_transaction(tx_id, account_id or "", access_token, cid):
+            logger.warning("event=tx_verification_failed cid=%s tx_id=%s", cid, tx_id)
             return
 
         try:
             resp = self.monzo_client.get_balance(access_token, account_id or "")
             resp.raise_for_status()
         except Exception as exc:
-            logger.error("Failed to check balance: %s", exc)
+            logger.error("event=balance_check_failed cid=%s error=%s", cid, exc)
             return
 
         balance = resp.json().get("balance")
         if balance is None:
-            logger.error("Balance response missing balance field.")
+            logger.error("event=balance_missing_field cid=%s", cid)
             return
 
         current_state_level = 0
@@ -135,39 +145,40 @@ class WebhookService:
         if current_state_level > prev_state_level:
             should_alert = True
             alert_counter = 0
-            logger.info("State escalated: %s -> %s", prev_state_level, current_state_level)
+            logger.info("event=alert_state_escalated cid=%s from=%s to=%s", cid, prev_state_level, current_state_level)
         elif current_state_level == prev_state_level and current_state_level > 0:
             alert_counter += 1
             if alert_counter % self.settings.alert_frequency == 0:
                 should_alert = True
         elif current_state_level < prev_state_level:
             alert_counter = 0
-            logger.info("State improved: %s -> %s", prev_state_level, current_state_level)
+            logger.info("event=alert_state_improved cid=%s from=%s to=%s", cid, prev_state_level, current_state_level)
 
         try:
             self.store.save_alert_state(AlertState(last_state_level=current_state_level, alert_counter=alert_counter))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("event=alert_state_save_failed cid=%s error=%s", cid, exc)
 
         if should_alert:
             prefix = "BALANCE CRITICAL" if current_state_level == 2 else "BALANCE WARNING"
             color = "#E74C3C" if current_state_level == 2 else "#F1C40F"
-            self.send_alert(access_token, account_id or "", transaction_data, balance, prefix, color)
+            self.send_alert(access_token, account_id or "", transaction_data, balance, prefix, color, cid)
 
-    def verify_transaction(self, tx_id: str, account_id: str, access_token: str) -> bool:
+    def verify_transaction(self, tx_id: str, account_id: str, access_token: str, correlation_id: str | None = None) -> bool:
+        cid = correlation_id or str(uuid.uuid4())
         try:
             resp = self.monzo_client.get_transaction(access_token, tx_id)
             resp.raise_for_status()
         except Exception as exc:
-            logger.error("Failed to verify transaction %s: %s", tx_id, exc)
+            logger.error("event=tx_verify_request_failed cid=%s tx_id=%s error=%s", cid, tx_id, exc)
             return False
 
         tx = resp.json().get("transaction", {})
         if not tx:
-            logger.error("Transaction verification returned empty payload for %s.", tx_id)
+            logger.error("event=tx_verify_empty_payload cid=%s tx_id=%s", cid, tx_id)
             return False
         if tx.get("account_id") != account_id:
-            logger.warning("Transaction %s account mismatch during verification.", tx_id)
+            logger.warning("event=tx_verify_account_mismatch cid=%s tx_id=%s", cid, tx_id)
             return False
         return True
 
@@ -179,7 +190,9 @@ class WebhookService:
         balance: int,
         prefix: str,
         color: str,
+        correlation_id: str | None = None,
     ) -> None:
+        cid = correlation_id or str(uuid.uuid4())
         merchant = tx_data.get("merchant", {}).get("name") if tx_data.get("merchant") else tx_data.get("description", "Unknown")
         fmt_bal = f"£{balance / 100:.2f}"
         title = f"{prefix}: Spent at {merchant} Balance: {fmt_bal}"
@@ -190,10 +203,10 @@ class WebhookService:
         try:
             self.monzo_client.post_feed(access_token, account_id, click_url, title, body, color)
         except Exception as exc:
-            logger.error("Failed to send feed item: %s", exc)
+            logger.error("event=feed_send_failed cid=%s error=%s", cid, exc)
 
         if tx_id:
             try:
                 self.monzo_client.patch_transaction_note(access_token, tx_id, title)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("event=tx_note_update_failed cid=%s tx_id=%s error=%s", cid, tx_id, exc)
