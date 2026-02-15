@@ -151,6 +151,8 @@ GitHub Actions runs a 3-job matrix:
 
 Workflow file: `.github/workflows/ci.yml`.
 
+Azure deploy workflow note: `.github/workflows/main_monzowatchdog-js.yml` now enforces that one of `AzureWebJobsStorage` or `AzureWebJobsStorage__accountName` is present before deploy. If the app setting is missing, provide repository secret `AZUREWEBJOBSSTORAGE` (connection string) or `AZUREWEBJOBSSTORAGE_ACCOUNTNAME` (RBAC account name).
+
 ## Getting a refresh token (one-time helper)
 
 Use `get_token.py` locally to complete OAuth and print a `MONZOREFRESHTOKEN` value:

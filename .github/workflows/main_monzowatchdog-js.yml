@@ -11,14 +11,14 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.' 
-  PYTHON_VERSION: '3.13' 
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: '.'
+  PYTHON_VERSION: '3.13'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read 
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -55,8 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     permissions:
-      id-token: write 
-      contents: read 
+      id-token: write
+      contents: read
 
     steps:
       - name: Download artifact from build job
@@ -68,13 +68,57 @@ jobs:
         run: |
           unzip release.zip
           rm release.zip
-        
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_1782651AB0A945848F6BDB5FBF6764F0 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_986CF350B5F740FC822AD20AE0A7EFD1 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_12BD66AF89804D029B37AEC8BFA81F98 }}
+
+      - name: Ensure AzureWebJobsStorage app setting exists
+        env:
+          FUNCTION_APP_NAME: monzowatchdog-js
+          STORAGE_CONNECTION_STRING: ${{ secrets.AZUREWEBJOBSSTORAGE }}
+          STORAGE_ACCOUNT_NAME: ${{ secrets.AZUREWEBJOBSSTORAGE_ACCOUNTNAME }}
+        run: |
+          resource_group=$(az functionapp list --query "[?name=='$FUNCTION_APP_NAME'].resourceGroup | [0]" -o tsv)
+          if [ -z "$resource_group" ]; then
+            echo "::error::Unable to find resource group for $FUNCTION_APP_NAME"
+            exit 1
+          fi
+
+          existing=$(az functionapp config appsettings list \
+            --name "$FUNCTION_APP_NAME" \
+            --resource-group "$resource_group" \
+            --query "[?name=='AzureWebJobsStorage' || name=='AzureWebJobsStorage__accountName'].name" \
+            -o tsv)
+
+          if [ -n "$existing" ]; then
+            echo "Storage app setting already configured: $existing"
+            exit 0
+          fi
+
+          if [ -n "$STORAGE_CONNECTION_STRING" ]; then
+            az functionapp config appsettings set \
+              --name "$FUNCTION_APP_NAME" \
+              --resource-group "$resource_group" \
+              --settings AzureWebJobsStorage="$STORAGE_CONNECTION_STRING"
+            echo "Configured AzureWebJobsStorage from secret AZUREWEBJOBSSTORAGE."
+            exit 0
+          fi
+
+          if [ -n "$STORAGE_ACCOUNT_NAME" ]; then
+            az functionapp config appsettings set \
+              --name "$FUNCTION_APP_NAME" \
+              --resource-group "$resource_group" \
+              --settings AzureWebJobsStorage__accountName="$STORAGE_ACCOUNT_NAME"
+            echo "Configured AzureWebJobsStorage__accountName from secret AZUREWEBJOBSSTORAGE_ACCOUNTNAME."
+            exit 0
+          fi
+
+          echo "::error::Neither AzureWebJobsStorage nor AzureWebJobsStorage__accountName is configured on the app, and no fallback secrets were provided (AZUREWEBJOBSSTORAGE / AZUREWEBJOBSSTORAGE_ACCOUNTNAME)."
+          exit 1
 
       - name: 'Deploy to Azure Functions'
         uses: Azure/functions-action@v1
