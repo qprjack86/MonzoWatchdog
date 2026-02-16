@@ -23,6 +23,7 @@ class _FakeMonzoClient:
     def __init__(self):
         self.feed_called = False
         self.note_called = False
+        self.last_feed_url = None
 
     def refresh_token(self, client_id, client_secret, refresh_token):
         return _FakeResponse(
@@ -40,8 +41,9 @@ class _FakeMonzoClient:
     def get_transaction(self, access_token, tx_id):
         return _FakeResponse(200, {"transaction": {"account_id": "acc_test"}})
 
-    def post_feed(self, *args, **kwargs):
+    def post_feed(self, access_token, account_id, click_url, title, body, color):
         self.feed_called = True
+        self.last_feed_url = click_url
 
     def patch_transaction_note(self, *args, **kwargs):
         self.note_called = True
@@ -117,6 +119,10 @@ class WebhookServiceTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.body, "Duplicate")
 
+    def test_build_transaction_click_url(self):
+        self.assertEqual(self.service.build_transaction_click_url("tx_abc"), "monzo://transactions/tx_abc")
+        self.assertEqual(self.service.build_transaction_click_url(None), "monzo://home")
+
     def test_alert_path_posts_feed_and_note(self):
         payload = {
             "type": "transaction.created",
@@ -131,6 +137,7 @@ class WebhookServiceTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertTrue(self.monzo.feed_called)
         self.assertTrue(self.monzo.note_called)
+        self.assertEqual(self.monzo.last_feed_url, "monzo://transactions/tx_123")
 
 
 if __name__ == "__main__":
