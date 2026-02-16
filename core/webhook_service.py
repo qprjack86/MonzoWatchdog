@@ -182,6 +182,13 @@ class WebhookService:
             return False
         return True
 
+    def build_transaction_click_url(self, tx_id: str | None) -> str:
+        """Build a transaction deep-link used in Monzo feed items."""
+        if not tx_id:
+            return "monzo://home"
+        # NOTE: The app expects the plural route, not `monzo://transaction/{id}`.
+        return f"monzo://transactions/{tx_id}"
+
     def send_alert(
         self,
         access_token: str,
@@ -198,7 +205,7 @@ class WebhookService:
         title = f"{prefix}: Spent at {merchant} Balance: {fmt_bal}"
         body = "Tap to view transaction details"
         tx_id = tx_data.get("id")
-        click_url = f"monzo://transaction/{tx_id}" if tx_id else "monzo://home"
+        click_url = self.build_transaction_click_url(tx_id)
 
         try:
             self.monzo_client.post_feed(access_token, account_id, click_url, title, body, color)
