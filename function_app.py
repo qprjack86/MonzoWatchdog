@@ -38,5 +38,5 @@ def monzo_webhook(req: func.HttpRequest) -> func.HttpResponse:
 
 
 @app.route(route="health", methods=["GET"])
-def health(_req: func.HttpRequest) -> func.HttpResponse:
+def health(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse('{"status":"ok"}', status_code=200, mimetype="application/json")
