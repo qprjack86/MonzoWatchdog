@@ -6,11 +6,12 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from core.monzo_client import MonzoClient
 from core.settings import Settings
-from stores.interfaces import AlertState, ConcurrencyError, TokenState
+from stores.interfaces import AlertState, CommitmentSweepState, ConcurrencyError, TokenState
 
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,9 @@ class WebhookService:
             logger.info("event=alert_state_escalated cid=%s from=%s to=%s", cid, prev_state_level, current_state_level)
         elif current_state_level == prev_state_level and current_state_level > 0:
             alert_counter += 1
-            if alert_counter % self.settings.alert_frequency == 0:
+            if current_state_level == 2:
+                should_alert = True
+            elif alert_counter % self.settings.alert_frequency == 0:
                 should_alert = True
         elif current_state_level < prev_state_level:
             alert_counter = 0
@@ -159,10 +162,62 @@ class WebhookService:
         except Exception as exc:
             logger.warning("event=alert_state_save_failed cid=%s error=%s", cid, exc)
 
+        if current_state_level == 2:
+            self.sweep_monthly_commitments(access_token, account_id or "", cid)
+
         if should_alert:
             prefix = "BALANCE CRITICAL" if current_state_level == 2 else "BALANCE WARNING"
             color = "#E74C3C" if current_state_level == 2 else "#F1C40F"
             self.send_alert(access_token, account_id or "", transaction_data, balance, prefix, color, cid)
+
+    def sweep_monthly_commitments(self, access_token: str, account_id: str, correlation_id: str | None = None) -> None:
+        cid = correlation_id or str(uuid.uuid4())
+        if not self.settings.commitments_sweep_enabled:
+            return
+        if not self.settings.commitments_pot_id:
+            logger.info("event=commitments_sweep_skipped cid=%s reason=missing_pot", cid)
+            return
+
+        month_key = datetime.now(timezone.utc).strftime("%Y-%m")
+        sweep_state: CommitmentSweepState = self.store.get_commitment_sweep_state()
+        if sweep_state.last_sweep_month == month_key:
+            return
+
+        try:
+            resp = self.monzo_client.list_scheduled_payments(access_token, account_id)
+            resp.raise_for_status()
+            scheduled = resp.json().get("scheduled_payments", [])
+        except Exception as exc:
+            logger.warning("event=commitments_fetch_failed cid=%s error=%s", cid, exc)
+            return
+
+        monthly_total = 0
+        for item in scheduled:
+            if item.get("active", True) is False:
+                continue
+            schedule = item.get("schedule") or {}
+            if schedule.get("frequency") != "monthly":
+                continue
+            monthly_total += int(item.get("amount") or 0)
+
+        if monthly_total <= 0:
+            self.store.save_commitment_sweep_state(CommitmentSweepState(last_sweep_month=month_key))
+            return
+
+        dedupe_id = f"commitments:{account_id}:{month_key}"
+        try:
+            transfer_resp = self.monzo_client.deposit_into_pot(
+                access_token=access_token,
+                pot_id=self.settings.commitments_pot_id,
+                source_account_id=account_id,
+                amount_pence=monthly_total,
+                dedupe_id=dedupe_id,
+            )
+            transfer_resp.raise_for_status()
+            self.store.save_commitment_sweep_state(CommitmentSweepState(last_sweep_month=month_key))
+            logger.info("event=commitments_swept cid=%s amount=%s", cid, monthly_total)
+        except Exception as exc:
+            logger.warning("event=commitments_sweep_failed cid=%s error=%s", cid, exc)
 
     def verify_transaction(self, tx_id: str, account_id: str, access_token: str, correlation_id: str | None = None) -> bool:
         cid = correlation_id or str(uuid.uuid4())
@@ -186,8 +241,7 @@ class WebhookService:
         """Build a transaction deep-link used in Monzo feed items."""
         if not tx_id:
             return "monzo://home"
-        # NOTE: The app expects the plural route, not `monzo://transaction/{id}`.
-        return f"monzo://transactions/{tx_id}"
+        return f"https://monzo.com/feed/{tx_id}"
 
     def send_alert(
         self,

@@ -61,7 +61,9 @@ Set these as Function App settings (or in `local.settings.json` when running loc
 | `AzureWebJobsStorage__tableServiceUri` | Optional** | Table endpoint for managed identity auth in Azure | `https://<acct>.table.core.windows.net` |
 | `LIMIT_WARNING` | No | Warning threshold in pence | `25000` |
 | `LIMIT_CRITICAL` | No | Critical threshold in pence | `10000` |
-| `ALERT_FREQUENCY` | No | Send a repeat alert every N qualifying transactions | `10` |
+| `ALERT_FREQUENCY` | No | Send a repeat warning alert every N qualifying transactions | `10` |
+| `COMMITMENTS_POT_ID` | No | Pot ID used to reserve monthly commitments when critical | `pot_000...` |
+| `COMMITMENTS_SWEEP_ENABLED` | No | Enable monthly commitment sweep when critical (`true` default) | `true` |
 
 \* Required initially. After first successful refresh+persist, storage becomes the source of truth.
 
@@ -168,7 +170,8 @@ This opens a browser, receives the callback at `http://localhost:8080/callback`,
 - **Token rotation:** the function refreshes access tokens automatically and persists them to Table Storage.
 - **Concurrency safety:** ETag checks handle simultaneous refresh attempts.
 - **Duplicate webhooks:** dedupe is store-backed (`azure_table` or `memory`) to avoid repeated processing in close succession.
-- **Alert behavior:** alerts trigger on threshold escalation and then periodically while still below threshold.
+- **Alert behavior:** warning alerts trigger on threshold escalation and then periodically; critical alerts trigger on every qualifying transaction while balance remains critical.
+- **Critical commitment sweep:** when critical, the bot calculates active monthly scheduled payments and moves that amount to `COMMITMENTS_POT_ID` once per calendar month.
 
 ## Security recommendations
 

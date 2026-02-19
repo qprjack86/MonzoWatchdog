@@ -28,6 +28,8 @@ class Settings:
     balance_limit_warning: int
     balance_limit_critical: int
     alert_frequency: int
+    commitments_pot_id: str | None
+    commitments_sweep_enabled: bool
     request_timeout: tuple[float, float]
     token_cache_ttl: int
     table_name: str
@@ -50,6 +52,8 @@ def load_settings() -> Settings:
         balance_limit_warning=int(_get_env("BALANCE_LIMIT_WARNING", "LIMIT_WARNING", default=25000)),
         balance_limit_critical=int(_get_env("BALANCE_LIMIT_CRITICAL", "LIMIT_CRITICAL", default=10000)),
         alert_frequency=int(_get_env("ALERT_FREQUENCY", default=10)),
+        commitments_pot_id=_get_env("COMMITMENTS_POT_ID"),
+        commitments_sweep_enabled=_env_bool("COMMITMENTS_SWEEP_ENABLED", default=True),
         request_timeout=(3.05, 10),
         token_cache_ttl=3000,
         table_name="monzotokens",

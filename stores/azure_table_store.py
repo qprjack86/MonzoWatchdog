@@ -10,7 +10,7 @@ from azure.data.tables import TableClient, TableServiceClient, UpdateMode
 from azure.identity import DefaultAzureCredential
 
 from core.settings import Settings
-from stores.interfaces import AlertState, ConcurrencyError, TokenState
+from stores.interfaces import AlertState, CommitmentSweepState, ConcurrencyError, TokenState
 
 
 class AzureTableStore:
@@ -105,6 +105,20 @@ class AzureTableStore:
             "RowKey": self.settings.row_key,
             "last_state_level": state.last_state_level,
             "alert_counter": state.alert_counter,
+        }
+        table_client.upsert_entity(payload, mode=UpdateMode.MERGE)
+
+
+    def get_commitment_sweep_state(self) -> CommitmentSweepState:
+        entity = self._get_entity()
+        return CommitmentSweepState(last_sweep_month=str(entity.get("commitment_last_sweep_month", "") or ""))
+
+    def save_commitment_sweep_state(self, state: CommitmentSweepState) -> None:
+        table_client = self._get_table_client()
+        payload = {
+            "PartitionKey": self.settings.partition_key,
+            "RowKey": self.settings.row_key,
+            "commitment_last_sweep_month": state.last_sweep_month,
         }
         table_client.upsert_entity(payload, mode=UpdateMode.MERGE)
 

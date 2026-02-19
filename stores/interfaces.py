@@ -16,6 +16,11 @@ class AlertState:
     alert_counter: int = 0
 
 
+@dataclass
+class CommitmentSweepState:
+    last_sweep_month: str = ""
+
+
 class ConcurrencyError(RuntimeError):
     pass
 
@@ -41,5 +46,13 @@ class DedupeStore(Protocol):
         ...
 
 
-class StateStore(TokenStore, AlertStateStore, DedupeStore, Protocol):
+class CommitmentSweepStore(Protocol):
+    def get_commitment_sweep_state(self) -> CommitmentSweepState:
+        ...
+
+    def save_commitment_sweep_state(self, state: CommitmentSweepState) -> None:
+        ...
+
+
+class StateStore(TokenStore, AlertStateStore, DedupeStore, CommitmentSweepStore, Protocol):
     pass

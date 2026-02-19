@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from stores.interfaces import AlertState, TokenState
+from stores.interfaces import AlertState, CommitmentSweepState, TokenState
 
 
 class MemoryStore:
@@ -11,6 +11,7 @@ class MemoryStore:
     def __init__(self):
         self._token_state = TokenState()
         self._alert_state = AlertState()
+        self._commitment_sweep_state = CommitmentSweepState()
         self._seen: dict[str, float] = {}
 
     def get_token_state(self) -> TokenState:
@@ -52,3 +53,9 @@ class MemoryStore:
 
         self._seen[key] = now
         return False
+
+    def get_commitment_sweep_state(self) -> CommitmentSweepState:
+        return CommitmentSweepState(last_sweep_month=self._commitment_sweep_state.last_sweep_month)
+
+    def save_commitment_sweep_state(self, state: CommitmentSweepState) -> None:
+        self._commitment_sweep_state = CommitmentSweepState(last_sweep_month=state.last_sweep_month)
