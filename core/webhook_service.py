@@ -146,10 +146,16 @@ class WebhookService:
             should_alert = True
             alert_counter = 0
             logger.info("event=alert_state_escalated cid=%s from=%s to=%s", cid, prev_state_level, current_state_level)
-        elif current_state_level == prev_state_level and current_state_level > 0:
-            alert_counter += 1
-            if alert_counter % self.settings.alert_frequency == 0:
+        elif current_state_level == prev_state_level:
+            if current_state_level == 2:
+                # Keep counting repeated critical events for observability,
+                # but alert on every qualifying transaction.
+                alert_counter += 1
                 should_alert = True
+            elif current_state_level == 1:
+                alert_counter += 1
+                if alert_counter % self.settings.alert_frequency == 0:
+                    should_alert = True
         elif current_state_level < prev_state_level:
             alert_counter = 0
             logger.info("event=alert_state_improved cid=%s from=%s to=%s", cid, prev_state_level, current_state_level)
