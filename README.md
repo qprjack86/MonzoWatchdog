@@ -17,7 +17,8 @@ It is a feature missing from the Monzo App (and one of the most requested featur
 - **Two alert levels** (both configurable):
   - **Warning (Amber):** balance below `LIMIT_WARNING` (default `25000` pence / £250).
   - **Critical (Red):** balance below `LIMIT_CRITICAL` (default `10000` pence / £100).
-- **Repeat reminder cadence** while you remain below a threshold using `ALERT_FREQUENCY` (default every 10 transactions).
+- **Warning reminders:** while in warning state, send periodic reminders every `ALERT_FREQUENCY` qualifying transactions (default every 10).
+- **Critical reminders:** while in critical state, send an alert on every qualifying transaction.
 - **Idempotency protection** to avoid duplicate processing when webhook events are retried.
 - **Token auto-refresh** with optimistic concurrency (ETag-safe updates in Azure Table Storage).
 - **Webhook secret verification** via either:
