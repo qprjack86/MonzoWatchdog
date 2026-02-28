@@ -144,18 +144,29 @@ class WebhookServiceTests(unittest.TestCase):
         self.assertTrue(self.monzo.note_called)
         self.assertEqual(self.monzo.last_feed_url, "monzo://transactions/tx_123")
 
-    def test_repeated_critical_state_alerts_every_transaction(self):
+    def test_repeated_critical_state_alerts_on_frequency(self):
+        # alert_frequency=10 in setUp; first tx escalates (always alerts), then
+        # subsequent txs only alert every alert_frequency transactions.
+        critical_settings = self.settings.__class__(**{**self.settings.__dict__, "alert_frequency": 3})
+        critical_monzo = _FakeMonzoClient()
+        critical_monzo.balance = 5000  # below critical threshold (10000)
+        critical_service = WebhookService(critical_settings, critical_monzo, MemoryStore())
+
         headers = {"x-webhook-secret": "webhook_secret"}
-        payload_1 = {"type": "transaction.created", "data": {"id": "tx_c1", "account_id": "acc_test"}}
-        payload_2 = {"type": "transaction.created", "data": {"id": "tx_c2", "account_id": "acc_test"}}
+        payloads = [
+            {"type": "transaction.created", "data": {"id": "tx_c1", "account_id": "acc_test"}},
+            {"type": "transaction.created", "data": {"id": "tx_c2", "account_id": "acc_test"}},
+            {"type": "transaction.created", "data": {"id": "tx_c3", "account_id": "acc_test"}},
+            {"type": "transaction.created", "data": {"id": "tx_c4", "account_id": "acc_test"}},
+        ]
 
-        first = self.service.handle_webhook(headers, {}, payload_1)
-        second = self.service.handle_webhook(headers, {}, payload_2)
+        for payload in payloads:
+            response = critical_service.handle_webhook(headers, {}, payload)
+            self.assertEqual(response.status_code, 200)
 
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 200)
-        self.assertEqual(self.monzo.feed_call_count, 2)
-        self.assertEqual(self.monzo.note_call_count, 2)
+        # tx_c1: escalation alert; tx_c2: counter=1 (no); tx_c3: counter=2 (no); tx_c4: counter=3 (3 % 3 == 0, alert)
+        self.assertEqual(critical_monzo.feed_call_count, 2)
+        self.assertEqual(critical_monzo.note_call_count, 2)
 
     def test_repeated_warning_state_alerts_on_frequency(self):
         warning_settings = self.settings.__class__(**{**self.settings.__dict__, "alert_frequency": 3})
